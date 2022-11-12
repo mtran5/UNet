@@ -88,7 +88,7 @@ class UNet(nn.Module):
             self.encoder.append(EncoderBlock(in_chans, out_chans, downsample=sample_factor, padding=padding))
             in_chans, out_chans = out_chans, out_chans*2
 
-        # Fully convolution layer to connect encoder and decoder
+        # Fully convolution layer that connects encoder and decoder
         self.fc = nn.Conv2d(in_chans, in_chans, 3, 1, padding=padding)
 
         out_chans = in_chans // 2
