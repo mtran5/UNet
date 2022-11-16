@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
-from models import UNet
+from unet import UNet
 from generate_images import EllipseDataset
 from tqdm import tqdm
 
@@ -12,9 +12,9 @@ else:
 print('using device:', device)
 
 if __name__ == "__main__":
-    model = UNet(nclass=1, in_chans=3, depth=3, skip=True, padding="same")
+    model = UNet(in_chans=3, depth=3, layers=1, skip_connection=True)
     model.to(device, dtype=dtype)
-
+    
     batch_size = 32
     lr = 1e-3
     dataset = EllipseDataset(size=5000)

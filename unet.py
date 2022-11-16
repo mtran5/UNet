@@ -1,9 +1,10 @@
 import torch
+import numpy as np
 import torch.nn as nn
 
-class EncoderBlock(nn.Module):
-    # Consists of 3x3 Conv -> ReLU -> 2x2 MaxPool
-    def __init__(self, in_chans, out_chans, downsample=2, padding="same"):    
+class EncoderBlock(nn.Module):        
+    # Consists of Conv -> ReLU -> MaxPool
+    def __init__(self, in_chans, out_chans, layers=2, sampling_factor=2, padding="same"):
         """
         Parameters:
             in_chans: number of channels in the input 
@@ -12,9 +13,13 @@ class EncoderBlock(nn.Module):
             padding: padding applied to Conv2d
         """
         super().__init__()
-        self.conv = nn.Conv2d(in_chans, out_chans, 3, 1, padding=padding)
-        self.relu = nn.ReLU()
-        self.mp = nn.MaxPool2d(downsample)
+        self.encoder = nn.ModuleList()
+        self.encoder.append(nn.Conv2d(in_chans, out_chans, 3, 1, padding=padding))
+        self.encoder.append(nn.ReLU())
+        for _ in range(layers-1):
+            self.encoder.append(nn.Conv2d(out_chans, out_chans, 3, 1, padding=padding))
+            self.encoder.append(nn.ReLU())
+        self.mp = nn.MaxPool2d(sampling_factor)
     def forward(self, x):
         """
         Input:
@@ -22,13 +27,14 @@ class EncoderBlock(nn.Module):
         Returns:
             output feature map of size (B, C_out, H//downsample, W//downsample)
         """
-        conv_out = self.relu(self.conv(x))
-        mp_out = self.mp(conv_out)
-        return mp_out, conv_out
+        for enc in self.encoder:
+            x = enc(x)
+        mp_out = self.mp(x)
+        return mp_out, x
 
 class DecoderBlock(nn.Module):
-    # Consists of interpolate -> 3x3 conv -> concat (if allowed) -> 3x3 Conv -> relu
-    def __init__(self, in_chans, out_chans, skip=True, upsample=2, padding="same"):
+    # Consists of 2x2 transposed convolution -> Conv -> relu
+    def __init__(self, in_chans, out_chans, layers=2, skip_connection=True, sampling_factor=2, padding="same"):
         """
         Parameters:
             in_chans: number of channels in the input 
@@ -38,15 +44,18 @@ class DecoderBlock(nn.Module):
             padding: padding applied to Conv2d
         """
         super().__init__()
-        self.conv1 = nn.Conv2d(in_chans, in_chans, 3, 1, padding=padding)
-        self.relu1 = nn.ReLU()
-        
-        # If concatentate then grow input dimension by 2
-        skip_factor = 2 if skip else 1
-        self.conv2 = nn.Conv2d(in_chans*skip_factor, out_chans, 3, 1, padding=padding)
-        self.relu2 = nn.ReLU()
-        self.upsample = upsample
-        self.skip = skip
+        skip_factor = 1 if skip_connection else 2
+        self.decoder = nn.ModuleList()
+        self.tconv = nn.ConvTranspose2d(in_chans, in_chans//2, sampling_factor, sampling_factor)
+
+        self.decoder.append(nn.Conv2d(in_chans//skip_factor, out_chans, 3, 1, padding=padding))
+        self.decoder.append(nn.ReLU())
+
+        for _ in range(layers-1):
+            self.decoder.append(nn.Conv2d(out_chans, out_chans, 3, 1, padding=padding))
+            self.decoder.append(nn.ReLU())
+
+        self.skip_connection = skip_connection
         self.padding = padding
     def forward(self, x, enc_features=None):
         """
@@ -56,20 +65,20 @@ class DecoderBlock(nn.Module):
         Returns:
             output feature map of size (B, C_out, H*upsample, W*upsample)
         """
-        x = nn.functional.interpolate(x, scale_factor=self.upsample, mode="bilinear")
-        x = self.relu1(self.conv1(x))
-        if self.skip:
+        x = self.tconv(x)
+        if self.skip_connection:
             if self.padding != "same":
                 # Crop the enc_features to the same size as input
                 w = x.size(-1)
                 c = (enc_features.size(-1) - w) // 2
                 enc_features = enc_features[:,:,c:c+w,c:c+w]
             x = torch.cat((enc_features, x), dim=1)
-        x = self.relu2(self.conv2(x))
+        for dec in self.decoder:
+            x = dec(x)
         return x
 
 class UNet(nn.Module):
-    def __init__(self, nclass=1, in_chans=3, depth=3, skip=True, sample_factor=2, padding="same"):
+    def __init__(self, nclass=1, in_chans=1, depth=5, layers=2, sampling_factor=2, skip_connection=True, padding="same"):
         """
         Parameters:
             nclass: number of class
@@ -83,19 +92,15 @@ class UNet(nn.Module):
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
 
-        out_chans = 16
+        out_chans = 64
         for _ in range(depth):
-            self.encoder.append(EncoderBlock(in_chans, out_chans, downsample=sample_factor, padding=padding))
+            self.encoder.append(EncoderBlock(in_chans, out_chans, layers, sampling_factor, padding))
             in_chans, out_chans = out_chans, out_chans*2
-
-        # Fully convolution layer that connects encoder and decoder
-        self.fc = nn.Conv2d(in_chans, in_chans, 3, 1, padding=padding)
 
         out_chans = in_chans // 2
         for _ in range(depth-1):
-            self.decoder.append(DecoderBlock(in_chans, out_chans, skip, upsample=sample_factor, padding=padding))
+            self.decoder.append(DecoderBlock(in_chans, out_chans, layers, skip_connection, sampling_factor, padding))
             in_chans, out_chans = out_chans, out_chans//2
-        self.decoder.append(DecoderBlock(in_chans, in_chans, skip, upsample=sample_factor, padding=padding))
         # Add a 1x1 convolution to produce final classes
         self.logits = nn.Conv2d(in_chans, nclass, 1, 1)
 
@@ -104,7 +109,7 @@ class UNet(nn.Module):
         for enc in self.encoder:
             x, enc_output = enc(x)
             encoded.append(enc_output)
-        x = self.fc(x)
+        x = encoded.pop()
         for dec in self.decoder:
             enc_output = encoded.pop()
             x = dec(x, enc_output)

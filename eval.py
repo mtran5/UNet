@@ -2,7 +2,7 @@ import torch
 from sklearn.metrics import jaccard_score
 import numpy as np
 from generate_images import EllipseDataset
-from models import UNet
+from unet import UNet
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -14,7 +14,7 @@ else:
 print('using device:', device)
 
 if __name__ == "__main__":
-    unet = UNet(nclass=1, in_chans=3, depth=3, skip=True, padding="same")
+    unet = UNet(in_chans=3, depth=3, layers=1, skip_connection=True)
 
     unet.load_state_dict(torch.load("unet.pkl"))
     dataset = EllipseDataset(2000)
